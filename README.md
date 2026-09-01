@@ -6,10 +6,9 @@ cross-encoder reranker on top. The idea was not to train a big model but to meas
 against the one before it, so I could actually see where the quality comes from and what it costs
 in latency.
 
-Everything is evaluated on BEIR / SciFact, which ships with qrels, so the nDCG numbers are real
-and not something I made up. The evaluation metrics (`nDCG@10`, `Recall@100`, `MRR@10`) are written
-by hand in [`src/metrics.py`](src/metrics.py) instead of pulled from a library, because implementing
-them was part of the point.
+Everything is evaluated on BEIR / SciFact, which ships with qrels, so the nDCG numbers are real.
+The evaluation metrics (`nDCG@10`, `Recall@100`, `MRR@10`) are written
+by hand in [`src/metrics.py`](src/metrics.py) instead of pulled from a library.
 
 ## Results (SciFact, 300 test queries, 5.2k documents)
 
@@ -53,11 +52,6 @@ relevance), and reranking cannot improve recall because it only reorders the sho
 of relevant documents that are outside the top-100 stay unreachable. On a dataset with more
 relevant documents per query, or with a weaker first stage, the reranker would pay off more.
 
-BM25 is actually slower than dense here (15 ms vs 11 ms). `rank_bm25` scores all 5.2k documents in
-pure Python, while FAISS flat search is compiled C++. A production BM25 over a real inverted index
-like Lucene or Pyserini would be sub-millisecond, which is part of why the Rust reimplementation is
-on the list below.
-
 ## Running it
 
 ```bash
@@ -88,4 +82,3 @@ data/scifact/          # BEIR SciFact (gitignored)
 
 - RAG layer: citation-grounded answers over the top-k results, plus an LLM-as-judge for faithfulness.
 - A second BEIR dataset (NFCorpus) for a cross-dataset table.
-- Rust: reimplement the BM25 scorer and measure the speedup over `rank_bm25`.
