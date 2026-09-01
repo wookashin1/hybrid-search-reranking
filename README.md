@@ -1,54 +1,64 @@
-# Hybrid Retrieval & Reranking with Reproducible IR Evaluation
+# Hybrid Retrieval and Reranking with Reproducible IR Evaluation
 
-A multi-stage retrieval system evaluated on [BEIR / SciFact](https://github.com/beir-cellar/beir),
-where **every stage is measured against the previous one**. The point is not "I trained a model" —
-it is demonstrating search-engineer thinking about the **quality / latency trade-off**.
+This is a project I built to learn how modern retrieval systems are put together, one stage
+at a time. It starts from a plain BM25 baseline and adds dense retrieval, hybrid fusion, and a
+cross-encoder reranker on top. The idea was not to train a big model but to measure each stage
+against the one before it, so I could actually see where the quality comes from and what it costs
+in latency.
 
-Evaluation metrics (`nDCG@10`, `Recall@100`, `MRR@10`) are implemented **by hand** in
-[`src/metrics.py`](src/metrics.py), not pulled from a library.
+Everything is evaluated on BEIR / SciFact, which ships with qrels, so the nDCG numbers are real
+and not something I made up. The evaluation metrics (`nDCG@10`, `Recall@100`, `MRR@10`) are written
+by hand in [`src/metrics.py`](src/metrics.py) instead of pulled from a library, because implementing
+them was part of the point.
 
 ## Results (SciFact, 300 test queries, 5.2k documents)
 
-| System            | nDCG@10 | Recall@100 | MRR@10 | p95 latency |
-|-------------------|:-------:|:----------:|:------:|:-----------:|
-| BM25 (lexical)    | 0.6523  |   0.8731   | 0.6184 |   15.0 ms   |
-| Dense (MiniLM)    | 0.6451  |   0.9250   | 0.6047 |   11.4 ms   |
-| Hybrid (RRF)      | 0.6840  |   0.9577   | 0.6503 |   28.0 ms   |
-| + Cross-encoder   | **0.6910** | **0.9577** | **0.6585** |   491 ms   |
+| System           | nDCG@10 | Recall@100 | MRR@10 | p95 latency |
+|------------------|:-------:|:----------:|:------:|:-----------:|
+| BM25 (lexical)   | 0.6523  |   0.8731   | 0.6184 |   15.0 ms   |
+| Dense (MiniLM)   | 0.6451  |   0.9250   | 0.6047 |   11.4 ms   |
+| Hybrid (RRF)     | 0.6840  |   0.9577   | 0.6503 |   28.0 ms   |
+| + Cross-encoder  | 0.6910  |   0.9577   | 0.6585 |   491 ms    |
 
-*Latency is per-query p95 on CPU (Apple Silicon). BM25 index build and corpus encoding are
-one-time and excluded.*
+Latency is per-query p95 on CPU (Apple Silicon). Building the BM25 index and encoding the corpus
+are one-time steps and are not included in the per-query numbers.
 
 ## Pipeline
 
-1. **BM25 baseline** — lexical retrieval (`rank_bm25`). A regex tokenizer that strips punctuation
-   alone lifted nDCG@10 from **0.5597 → 0.6523 (+0.093)** over naive `.split()` — preprocessing
-   pays before any ML.
-2. **Dense retrieval** — bi-encoder (`all-MiniLM-L6-v2`), embeddings normalized, FAISS `IndexFlatIP`
-   (exact; the corpus is too small to need ANN). Inner product on unit vectors = cosine similarity.
-3. **Hybrid fusion** — Reciprocal Rank Fusion over BM25 + dense. RRF operates on **ranks, not
-   scores** (BM25 scores and cosine are not comparable), `k = 60`.
-4. **Cross-encoder reranking** — `ms-marco-MiniLM-L-6-v2` scores each `(query, doc)` pair jointly
-   over the top-100 hybrid candidates. Too slow to run over the full corpus; that is why it only
-   reranks a shortlist.
+1. BM25 baseline: lexical retrieval with `rank_bm25`. Switching the tokenizer from a naive
+   `.split()` to a small regex that strips punctuation raised nDCG@10 from 0.5597 to 0.6523, so
+   preprocessing already pays off before any machine learning.
+2. Dense retrieval: a bi-encoder (`all-MiniLM-L6-v2`) with normalized embeddings and a FAISS
+   `IndexFlatIP` index. The index is exact because the corpus is small enough that approximate
+   search is not needed. Inner product on unit vectors is the same as cosine similarity.
+3. Hybrid fusion: Reciprocal Rank Fusion over the BM25 and dense lists. RRF works on ranks, not
+   scores, which matters because BM25 scores and cosine similarity are not on the same scale
+   (`k = 60`).
+4. Cross-encoder reranking: `ms-marco-MiniLM-L-6-v2` scores each (query, document) pair jointly
+   over the top-100 hybrid candidates. It is too slow to run over the whole corpus, which is exactly
+   why it only reranks a shortlist.
 
-## Key findings
+## What I found
 
-- **Dense loses to BM25 on nDCG but wins on Recall@100.** On scientific text with exact terminology
-  (gene names, compounds), lexical match is sharp at the top; the dense model — trained on general
-  web text — is out-of-domain and blurs precise terms, but its semantics cast a **wider net**
-  (Recall@100 0.925 vs 0.873). They are **complementary, not competitors** — which is exactly why
-  hybrid fusion beats both on every metric.
-- **The cross-encoder buys +0.007 nDCG for ~17× the latency** (28 ms → 491 ms). Not a failure — a
-  cost/benefit finding. Hybrid is already near the ceiling (SciFact has ~1 relevant doc/query,
-  binary relevance) and reranking cannot improve recall — it only reorders the shortlist, so the
-  4.2% of relevant docs outside the top-100 are unreachable. On a dataset with more relevant docs
-  per query, or weaker first-stage retrieval, the reranker would pay off more.
-- **BM25 is slower than dense here (15 ms vs 11 ms).** `rank_bm25` scores all 5.2k docs in pure
-  Python; FAISS flat search is optimized C++. A production BM25 over a real inverted index
-  (Lucene / Pyserini) would be sub-millisecond. This motivates the optional Rust reimplementation.
+Dense retrieval loses to BM25 on nDCG but wins on Recall@100. On scientific text with exact
+terminology like gene names and compounds, lexical matching is sharp at the top of the list. The
+dense model is trained on general web text, so it is out of domain here and blurs precise terms,
+but its semantics cast a wider net (Recall@100 0.925 vs 0.873). The two are complementary rather
+than competing, which is why hybrid fusion beats both of them on every metric.
 
-## Run
+The cross-encoder adds only 0.007 nDCG while making a query about 17 times slower (28 ms to
+491 ms). I think that is a useful result rather than a disappointing one. Hybrid is already close
+to the ceiling on this dataset (SciFact has roughly one relevant document per query, with binary
+relevance), and reranking cannot improve recall because it only reorders the shortlist. The 4.2%
+of relevant documents that are outside the top-100 stay unreachable. On a dataset with more
+relevant documents per query, or with a weaker first stage, the reranker would pay off more.
+
+BM25 is actually slower than dense here (15 ms vs 11 ms). `rank_bm25` scores all 5.2k documents in
+pure Python, while FAISS flat search is compiled C++. A production BM25 over a real inverted index
+like Lucene or Pyserini would be sub-millisecond, which is part of why the Rust reimplementation is
+on the list below.
+
+## Running it
 
 ```bash
 pip install -r requirements.txt      # rank_bm25, numpy, sentence-transformers, faiss-cpu
@@ -65,8 +75,8 @@ python src/rerank.py
 
 ```
 src/
-  data_loader.py       # load corpus / queries / qrels (test split only — zero-shot)
-  metrics.py           # ndcg@k, recall@k, mrr@k — by hand
+  data_loader.py       # load corpus / queries / qrels (test split only, zero-shot)
+  metrics.py           # ndcg@k, recall@k, mrr@k, by hand
   bm25_baseline.py     # stage 1
   dense_retrieval.py   # stage 2
   hybrid_retrieval.py  # stage 3 (RRF)
@@ -74,8 +84,8 @@ src/
 data/scifact/          # BEIR SciFact (gitignored)
 ```
 
-## Next
+## Next steps
 
-- RAG layer: citation-grounded answers over top-k + LLM-as-judge for faithfulness.
-- Second BEIR dataset (NFCorpus) for a cross-dataset table.
-- Rust: reimplement the BM25 scorer, measure speedup vs `rank_bm25`.
+- RAG layer: citation-grounded answers over the top-k results, plus an LLM-as-judge for faithfulness.
+- A second BEIR dataset (NFCorpus) for a cross-dataset table.
+- Rust: reimplement the BM25 scorer and measure the speedup over `rank_bm25`.
