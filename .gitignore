@@ -1,0 +1,18 @@
+# Data — nije pod verzijom, skida se skriptom
+data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Rezultati (indeksi, cache) — tabele/plotovi idu u git ručno
+results/*.faiss
+results/*.pkl
+.DS_Store
+.ipynb_checkpoints/
+
+# interni brief — ne u javni repo
+CLAUDE.md
